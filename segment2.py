@@ -17,19 +17,19 @@ from multiprocessing import Pool
 MISSING_FRAME_LIMIT = 5
 
 class TrackingObject():
-    def __init__(self, contour):
+    def __init__(self, start_frame):
 
         self.id = -1
-        self.start_frame = -1
+        self.start_frame = start_frame
         self.end_frame = -1
 
         self.centers = list()
         self.shapes = list()
         self.areas = list()
         
-        self.isValid = False
-
-        self.addFrame(contour)
+        self.count_id = -1
+        #self.isValid = False
+        #self.addFrame(contour)
 
     def addFrame(self, contour=None):
         if contour is None:
@@ -92,22 +92,16 @@ class TrackingObject():
         return -1
 
     def is_valid(self):
-        live_count = 0
-        for cnt in self.shapes:
-            if cnt is not None:
-                live_count += 1
-        return live_count > 10
+        return min([x[0] for x in self.centers]) < 1300
 
-    def draw_on_frame(self, frame, frame_start, frame_id):
-        idx = frame_start - self.start_frame + frame_id
-        print("Frame start: ", self.start_frame, " end frame: ", self.end_frame)
-        print("Frame offset: ", frame_start)
-        print("current frame: ", frame_id)
-        print(idx, "# frames ", len(self.centers))
-        print("****")
+    def draw_on_frame(self, frames, frame_id):
+        idx = frame_id - self.start_frame
+        frame = frames[frame_id%len(frames)]
+
         center = self.centers[idx]
         contour = self.shapes[idx]
         is_valid = self.is_valid()
+
         if is_valid:
             color = (0, 255, 0)
         else:
@@ -115,8 +109,11 @@ class TrackingObject():
         
         if center is not None:
             cv2.circle(frame,(center[0],center[1]),4,color,-1)
-            cv2.putText(frame,f"{self.id}",(center[0],center[1]+5),
-                        cv2.FONT_HERSHEY_SIMPLEX,1.2,(255,255,255),2)
+            if is_valid:
+                cv2.putText(frame,f"{self.count_id}",(center[0],center[1]-5),
+                            cv2.FONT_HERSHEY_SIMPLEX,1.2,(255,255,255),2)
+            cv2.putText(frame,f"{center[0]}, {center[1]}",(center[0]-10,center[1]+15),
+                        cv2.FONT_HERSHEY_SIMPLEX,0.7,(255,255,255),2)
         if contour is not None:
             cv2.drawContours(frame,[contour],-1,color,2)
 
@@ -140,11 +137,16 @@ class TrackingObject():
 class Tracker():
     def __init__(self, height, width):
         self.frames = list()
-        self.objects = dict()
-        self.live = list()
-        self.dist_thresh = height*width*0.000005
+        self.alive = list()
+        self.objects = list()
+        self.unique_count = list()
+        self.valid = set()
+
+        self.dist_thresh = height*width*0.00005
         self.max_missing_frames = MISSING_FRAME_LIMIT
+
         print("Distance threshold: ", self.dist_thresh)
+
         self.new_frame()
 
     def add_bounding_shape(self, contour, frame=-1):
@@ -154,90 +156,99 @@ class Tracker():
         self.frames.append(list())
 
     def process_latest_frame(self):
-        # get the live tracking objects
-        live_objs = list()
-        for live in self.live:
-            live_objs.append(self.objects[live])
-
-        sorted(live_objs, key=lambda o: o.id, reverse=True)
-
-        contours = self.frames[-1]
-
-        # if there are no live objects the contours are all added
-        # as new live objects
-        if len(live_objs) == 0:
-            for cnt in contours:
-                idx = len(self.objects)
-                tobj = TrackingObject(cnt)
-                tobj.id = idx
-                tobj.start_frame = len(self.frames)
-                self.objects[idx] = tobj
-                self.live.append(idx)
+        # the first frame creates new objects
+        if len(self.frames) == 1 or len(self.alive) == 0:
+            for contour in self.frames[0]:
+                obj = TrackingObject(len(self.frames)-1)
+                obj.addFrame(contour)
+                obj.id = len(self.objects)
+                self.objects.append(obj)
+                self.alive.append(obj)
+                self.unique_count.append(len(self.alive))
             return
 
-        # if there are live objects, match these contours to the nearest
-        # live object
-        dmat = np.ones((len(live_objs), len(contours))) * 999999
+        if (len(self.frames[-1]) == 0):
+            for obj in self.alive:
+                obj.end_frame = len(self.frames)-1
+            self.alive = list()
+            return
 
-        status = dict()
-        for i in range(len(live_objs)):
-            status[i] = "pending"
-            for j in range(len(contours)):
-                dmat[i][j] = live_objs[i].dist(contours[j])
+        print("Frame: ", len(self.frames))
+        # create the distance matrix for objects
+        dist_mat = np.ones((len(self.alive), len(self.frames[-1])))*99999
+        for i, obj in enumerate(self.alive):
+            for j, contour in enumerate(self.frames[-1]):
+                dist_mat[i][j] = obj.dist(contour)
 
+        for obj in self.alive:
+            print(obj.id, end=" ")
+        print("")
 
-        # assign the contours to the closest live object
-        taken = set()
-        for i in range(len(live_objs)):
-            dists = dmat[i]
-            min_dist = dists.min()
-            min_dist_idx = dists.argmin()
-            
-            if min_dist < self.dist_thresh:
-                if min_dist_idx in taken:
-                    live_objs[i].addFrame(None)
-                    continue
-                live_objs[i].addFrame(contours[min_dist_idx])
-                taken.add(min_dist_idx)
-            else:
-                live_objs[i].addFrame(None)
+        print(dist_mat)
+        # until each object is assigned or the min distance is greater than
+        # the threshold, assign objects
 
-        # create new live objects for the unassigned contours
-        for j in range(len(contours)):
-            if j in taken:
-                continue
-            idx = len(self.objects)
-            tobj = TrackingObject(contours[j])
-            tobj.id = idx
-            tobj.start_frame = len(self.frames)
-            self.objects[idx] = tobj
-            self.live.append(idx)
+        min_dist = np.min(dist_mat)
+        flat_index = np.argmin(dist_mat)
+        row, col = np.unravel_index(flat_index, dist_mat.shape)
 
-        # kill the live objects that haven't had a match for 10 frames
-        kill_set = set()
-        for live in live_objs:
-            if live.last_seen() >= self.max_missing_frames:
-                kill_set.add(live.id)
-                live.end_frame = len(self.frames) - live.last_seen()
-                #print("!", live.start_frame, '->', live.end_frame, live.last_seen(), len(self.frames), len(live.shapes))
-        print(self.live, kill_set)
-        self.live = list(set(self.live) - kill_set)
-        print(self.live)
+        assigned_objs = set()
+        assigned_contours = set()
+        while min_dist < self.dist_thresh and len(assigned_objs) < len(self.alive):
+
+            # assign the object to that which is the closest
+            self.alive[row].addFrame(self.frames[-1][col])
+            assigned_objs.add(row)
+            assigned_contours.add(col)
+            dist_mat[row, :] = 99999
+
+            min_dist = np.min(dist_mat)
+            flat_index = np.argmin(dist_mat)
+            row, col = np.unravel_index(flat_index, dist_mat.shape)
+
+        print("Assigned objects: ", end="")
+        for i in assigned_objs:
+            print(f"({i}, {self.alive[i].id}) ", end="")
+        print()
+
+        print("Assigned contours: ", assigned_contours)
+        # unassigned objects are no longer alive.
+        # unassigned contours are no new objects
+        for x in list(set(range(len(self.alive)))-assigned_objs):
+            self.alive[x].end_frame = len(self.frames)-1
+
+        new_alive = list()
+        for x in list(assigned_objs):
+            new_alive.append(self.alive[x])
+        self.alive = new_alive
+
+        new_object_c = 0
+        for y in list(set(range(len(self.frames[-1])))-assigned_contours):
+            obj = TrackingObject(len(self.frames)-1)
+            obj.addFrame(self.frames[-1][y])
+            obj.id = len(self.objects)
+
+            self.objects.append(obj)
+            self.alive.append(obj)
+            new_object_c += 1
+
+        self.unique_count.append(self.unique_count[-1]+new_object_c)
 
     def draw_objects(self, frames, frame_start):
-        for fidx in range(frame_start, frame_start + len(frames)):
-            object_count = 0
-            for obj in self.objects.values():
-                for i in range(fidx):
-                    if i >= obj.start_frame and obj.is_valid():
-                        object_count += 1
-                if fidx >= obj.start_frame and (fidx <= obj.end_frame or
-                        obj.end_frame == -1):
-                    print(len(frames), fidx, obj.start_frame)
-                    obj.draw_on_frame(frames[fidx-frame_start], frame_start, fidx-frame_start)
-            cv2.putText(frames[fidx-frame_start],f"Conteo: {object_count}",(30,50),
-                        cv2.FONT_HERSHEY_SIMPLEX,1.2,(255,255,255),2)
 
+        for fidx in range(frame_start, frame_start+len(frames)):
+            for obj in self.objects:
+                if fidx >= obj.start_frame and (fidx < obj.end_frame or obj.end_frame == -1):
+
+                    if obj.is_valid() and obj.id not in self.valid:
+                       self.valid.add(obj.id)
+                       obj.count_id = len(self.valid)
+
+                    obj.draw_on_frame(frames, fidx)
+
+            cv2.putText(frames[fidx-frame_start],f"Conteo: {len(self.valid)}",(30,50),
+                        cv2.FONT_HERSHEY_SIMPLEX,1.2,(255,255,255),2)
+                
 
 class PlantProcessor():
 
@@ -260,7 +271,7 @@ class PlantProcessor():
         cap = cv2.VideoCapture(self.filename)
         if not cap.isOpened():
             raise Exception(f"Could not open file: {self.filename}")
-        self.fps = cap.get(cv2.CAP_PROP_FPS)
+        self.fps = cap.get(cv2.CAP_PROP_FPS)#/3
         self.total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         self.width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -281,7 +292,7 @@ class PlantProcessor():
                 self._process_batch(np.array(frames), frame_id+1-self.batch_size)
                 frames = list()
                 batch_id += 1
-                if batch_id > 3:
+                if batch_id > 6:
                     break
             frame_id += 1
 
@@ -311,6 +322,23 @@ class PlantProcessor():
             for cnt in contours:
                 if cv2.contourArea(cnt) < min_area:
                     continue
+
+                # if the neighborhood of the contour is not darker, assume a false positive
+                #gray = cv2.cvtColor(frames[i], cv2.COLOR_BGR2GRAY)
+                #mask = np.zeros(gray.shape, dtype=np.uint8)
+                #cv2.drawContours(mask, [cnt], -1, 255, thickness=-1)
+
+                #kernel = np.ones((7,7), np.uint8)
+                #dilated = cv2.dilate(mask, kernel, iterations=1)
+                #ring = cv2.subtract(dilated, mask)
+
+                #inside_mean = cv2.mean(gray, mask=mask)[0]
+                #ring_mean = cv2.mean(gray, mask=ring)[0]
+                #difference = inside_mean - ring_mean
+                # the immediate ring around the plant is lighter than the plant,
+                # likely a false positive
+                #if difference > 30:
+                    #continue
 
                 self.tracker.add_bounding_shape(cnt, -1)
 
@@ -381,7 +409,7 @@ class PlantProcessor():
 
 
 def main():
-    p_proc = PlantProcessor("videos/20260121_comp_2221_2114.mp4", batch_size=100)
+    p_proc = PlantProcessor("videos/linea_841.mp4", batch_size=100)
     return p_proc.process()
 
 

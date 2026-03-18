@@ -65,4 +65,4 @@ Warning, if the datadir exists, you will be prompted to delete it. Be careful no
 
 ### Fine tune the model
 Run the model, specifying where your dataset yaml is stored.
-$ yolo train data=dataset/data.yaml model=yolo26n.pt augment=True
+`$ yolo train data=dataset/data.yaml model=yolo26n.pt augment=True`

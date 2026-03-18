@@ -27,6 +27,7 @@ I recommend labeling the images with LabelImg or another third party.
 ### Organize the image directory for YOLO.
 The directory must have the following structure.
 
+```
 dataset/
  | data.yaml - information on the dataset
  | images 
@@ -37,6 +38,7 @@ dataset/
      | train
      | test
      \ val
+```
 
 You can build this using build\_data.py.
 

@@ -92,6 +92,7 @@ def split_dataset(images_dir, labels_dir, output_dir, test_size=0.2,
             shutil.copy(os.path.join(images_dir, image), os.path.join(image_path, image))
             label_file = image.replace('.jpg', '.txt')
             label_file = label_file.replace('.png', '.txt')
+            #label_file = label_file.replace(' ', '')
 
             # If there is no corresponding text file, write a blank text file,
             # assume it is labeled, but there are no plants.
@@ -100,6 +101,7 @@ def split_dataset(images_dir, labels_dir, output_dir, test_size=0.2,
                             os.path.join(label_path, label_file))
             else:
                 open(os.path.join(label_path, label_file), "w").close()
+                print("Warning: Writing blank file for: ", os.path.join(labels_dir, label_file))
 
     # write the yaml file:
     with open(os.path.join(output_dir, 'data.yaml'), 'w') as fptr:

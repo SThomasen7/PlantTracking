@@ -92,13 +92,26 @@ def track_video(model, base_path, data):
 
         out.write(frame)
 
+    # get the final mapping
+    total = 0
+    count_map = list()
+    for key, val in seen_ids.items():
+        if val > 5:
+            total += 1
+            count_map.append({"count": total, "id": key})
+
+    count_map_file = os.path.join(output_dir, f"{base_file}_tracked.xlsx")
+    df = pd.DataFrame(count_map)
+    df.to_excel(count_map_file, index=False)
+
     # save the data:
     data["conteo_automatico"] = total
-    data["error_pct"] = (np.abs(data["conteo_humano"]-total)/data["conteo_humano"])*100
-    data["densidad"] = (data["conteo_humano"]/((data["longitud"]*1.95))*10000)
+    data["densidad"] = (total/((data["longitud"]*1.95))*10000)
+    data["conteo_teorico"] = data["longitud"]/0.18
+    data["error_pct"] = (np.abs(data["conteo_teorico"]-total)/data["conteo_teorico"])*100
     out.release()
 
-    return data
+    return data, count_map
 
 def load_workbook(filename):
     df = pd.read_excel(filename)
@@ -108,6 +121,7 @@ def load_workbook(filename):
         "Linea": "linea",
         "Longitud (metros)": "longitud",
         "Conteo humano": "conteo_humano",
+        "Conteo teorico": "conteo_teorico",
         "Conteo Automatico": "conteo_automatico",
         "% Error": "error_pct",
         "Densidad p/hec": "densidad"
@@ -124,6 +138,7 @@ def save_workbook(data, filename):
         "linea": "Linea",
         "longitud": "Longitud (metros)",
         "conteo_humano": "Conteo humano",
+        "conteo_teorico": "Conteo teorico",
         "conteo_automatico": "Conteo Automatico",
         "error_pct": "% Error",
         "densidad": "Densidad p/hec"
@@ -131,57 +146,137 @@ def save_workbook(data, filename):
     df.to_excel(filename, index=False)
 
 
-def generate_html(data):
+def generate_html(data, count_maps):
     max_longitud = max(d["longitud"] for d in data)
     rows = []
-    data = sorted(data, key=operator.itemgetter('linea'))
-    for d in data:
-        width_percent = (d["longitud"] / max_longitud) * 100
 
+    data = sorted(data, key=operator.itemgetter('linea'))
+
+    for i, d in enumerate(data):
+        count_map = count_maps[i]
+
+        width_percent = (d["longitud"] / max_longitud) * 100
+        densidad = (d["conteo_automatico"] / ((d["longitud"] * 1.95)) * 10000)
+        densidad_0 = ((d["longitud"] / 0.18) / ((d["longitud"] * 1.95)) * 10000)
+
+        pct_error = ((densidad - densidad_0) / densidad_0) * 100
+
+        color = "green"
+        if -15.0 < pct_error < -10.0:
+            color = "yellow"
+        elif pct_error <= -15.0:
+            color = "red"
+
+        # --- build ticks (evenly spaced) ---
+        ticks_html = []
+        n = len(count_map)
+
+        for j, entry in enumerate(count_map):
+            pos_percent = (j / (n - 1))
+            spacing_px = 25
+            pos_px = j*spacing_px
+
+            ticks_html.append(f"""
+                <div class="tick" style="left: {pos_px}px;">
+                    <div class="tick-mark"></div>
+                    <div class="tick-label">{entry['id']}</div>
+                </div>
+            """)
+
+        # --- row ---
+        #pxl_width = len(count_map)*30
+        bar_pixel_width = max(width_percent, (len(count_map) - 1) * spacing_px)
         row = f"""
         <div class="row">
             <div class="linea">{d['linea']}</div>
-            <div class="bar-container">
-                <div class="bar" style="width: {width_percent}%"></div>
+            <div class="scroll-wrapper">
+                <div class="bar-container">
+                    <div class="line" style="width: {bar_pixel_width}px; background-color: {color};">
+                        {''.join(ticks_html)}
+                    </div>
+                </div>
             </div>
             <div class="stats">
-                conteo: {d['conteo_humano']} | densidad: {d['densidad']}
+                conteo: {d['conteo_automatico']} |
+                densidad (contado/deseado): {densidad:.2f}/{densidad_0:.2f}
             </div>
         </div>
         """
+
         rows.append(row)
 
+    # --- full HTML ---
     html = f"""
     <html>
     <head>
         <style>
-            body {{
-                font-family: Arial, sans-serif;
-            }}
-            .row {{
-                display: flex;
-                align-items: center;
-                margin: 6px 0;
-            }}
-            .linea {{
-                width: 60px;
-                text-align: right;
-                margin-right: 10px;
-                font-weight: bold;
-            }}
-            .bar-container {{
-                width: 300px;
-                height: 20px;
-                background: #eee;
-                margin-right: 10px;
-            }}
-            .bar {{
-                height: 100%;
-                background: green;
-            }}
-            .stats {{
-                font-size: 14px;
-            }}
+        body {{
+            font-family: Arial, sans-serif;
+            margin: 0;
+        }}
+
+        .row {{
+            display: flex;
+            align-items: center;
+            margin: 10px 0;
+            width: 100%;
+        }}
+
+        .linea {{
+            width: 60px;
+            text-align: right;
+            padding-right: 10px;
+            font-weight: bold;
+            font-size: 14px;
+            flex-shrink: 0;
+        }}
+
+        .scroll-wrapper {{
+            flex: 1;                 /* fills remaining space */
+            overflow-x: auto;
+        }}
+
+        .bar-container {{
+            position: relative;
+            min-width: 100%;         /* at least fill visible area */
+            height: 40px;
+            background: #eee;
+        }}
+
+        .line {{
+            position: relative;      /* anchor ticks */
+            height: 2px;
+            top: 20px;
+        }}
+
+        .tick {{
+            position: absolute;
+            transform: translateX(-50%);  /* center on % */
+            top: -10px;
+            text-align: center;
+        }}
+
+        .tick-mark {{
+            width: 1px;
+            height: 6px;
+            margin: 0 auto;
+            background: #2e7d32;
+        }}
+
+        .tick-label {{
+            font-size: 10px;
+            white-space: nowrap;
+            color: #2e7d32;
+            transform: rotate(-45deg);
+            transform-origin: left top;
+            margin-top: 2px;
+        }}
+
+        .stats {{
+            font-size: 14px;
+            margin-left: 10px;
+            flex-shrink: 0;
+        }}
         </style>
     </head>
     <body>
@@ -189,8 +284,8 @@ def generate_html(data):
     </body>
     </html>
     """
+
     return html
-        
 
 if __name__ == "__main__":
     # excel workbook
@@ -221,16 +316,23 @@ if __name__ == "__main__":
 
     print(f"Model: {model_path}")
     # track the videos and update the 
+    count_maps = list()
     for i in range(len(data)):
         # skip those that we've already predicted
-        if not np.isnan(data[i]["conteo_automatico"]):
-            continue 
+        data[i]["conteo_teorico"] = data[i]["longitud"]/0.18
+        #if not np.isnan(data[i]["conteo_automatico"]):
+            #data[i]["densidad"] = (data[i]["conteo_automatico"]/((data[i]["longitud"]*1.95))*10000)
+            #data[i]["conteo_teorico"] = data[i]["longitud"]/0.18
+            #data[i]["error_pct"] = (np.abs(data[i]["conteo_teorico"]-data[i]["conteo_automatico"])/data[i]["conteo_teorico"])*100
+            #continue 
         model = YOLO(model_path)
-        data[i] = track_video(model, base_path, data[i])
+        data[i], count_map = track_video(model, base_path, data[i])
+        count_maps.append(count_map)
         save_workbook(data, wb_path)
+    save_workbook(data, wb_path)
     
     # create the html report
-    html = generate_html(data)
+    html = generate_html(data, count_maps)
     with open(os.path.join(base_path, 'data.html'), 'w') as fptr:
         fptr.write(html)
 
